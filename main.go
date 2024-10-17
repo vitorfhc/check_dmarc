@@ -26,6 +26,8 @@ func main() {
 
 	if *debug {
 		logrus.SetLevel(logrus.DebugLevel)
+	} else {
+		logrus.SetLevel(logrus.FatalLevel)
 	}
 
 	logrus.Debug("starting")
@@ -41,7 +43,7 @@ func main() {
 		dmarcRecord, err := net.LookupTXT("_dmarc." + domain)
 		if err != nil {
 			logrus.WithError(err).Errorf("error fetching DMARC record for domain: %q", domain)
-			return
+			continue
 		}
 
 		for _, record := range dmarcRecord {
