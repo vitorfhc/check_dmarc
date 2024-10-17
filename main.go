@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/signal"
 	"strings"
+	"time"
 
-	"github.com/sirupsen/logrus"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 type DMARCTag struct {
@@ -21,16 +24,24 @@ type DMARCRecord struct {
 }
 
 func main() {
-	debug := flag.Bool("debug", false, "enable debug mode")
+	debug := flag.Bool("debug", false, "enable debug logging")
 	flag.Parse()
 
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	if *debug {
-		logrus.SetLevel(logrus.DebugLevel)
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	} else {
-		logrus.SetLevel(logrus.FatalLevel)
+		zerolog.SetGlobalLevel(zerolog.WarnLevel)
 	}
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339})
 
-	logrus.Debug("starting")
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, os.Interrupt)
+	go func() {
+		<-signalChan
+		os.Exit(0)
+	}()
+
 	reader := bufio.NewScanner(os.Stdin)
 
 	for reader.Scan() {
@@ -40,34 +51,46 @@ func main() {
 			continue
 		}
 
+		log.Info().Str("domain", domain).Msg("Processing domain")
+
 		dmarcRecord, err := net.LookupTXT("_dmarc." + domain)
 		if err != nil {
-			logrus.WithError(err).Errorf("error fetching DMARC record for domain: %q", domain)
+			log.Warn().Err(err).Str("domain", domain).Msg("Failed to lookup DMARC TXT record")
 			continue
 		}
 
+		log.Debug().Strs("records", dmarcRecord).Msg("DMARC TXT records found")
+
 		for _, record := range dmarcRecord {
-			dmarcRecord, err := parseDMARCRecord(record)
+			record = strings.TrimSpace(record)
+			record = strings.ToLower(record)
+
+			log.Debug().Str("record", record).Msg("Parsing DMARC record")
+			dmarcParsed, err := parseDMARCRecord(record)
 			if err != nil {
-				logrus.WithError(err).Errorf("error parsing DMARC record for domain: %q", domain)
+				log.Warn().Err(err).Str("record", record).Msg("Failed to parse DMARC record")
 				continue
 			}
 
-			logrus.WithField("dmarcRecord", dmarcRecord).Debugf("parsed DMARC record for domain: %q", domain)
+			log.Debug().Interface("parsed_record", dmarcParsed).Msg("Parsed DMARC record")
 
-			ruaValue, ok := dmarcRecord.Tags["rua"]
+			ruaValue, ok := dmarcParsed.Tags["rua"]
 			if !ok {
+				log.Warn().Str("domain", domain).Msg("No 'rua' tag found in DMARC record")
 				continue
 			}
+
+			log.Debug().Str("rua", ruaValue).Msg("Found 'rua' tag")
 
 			afterAt := strings.Split(ruaValue, "@")
 			if len(afterAt) != 2 {
-				logrus.Errorf("invalid rua tag: %q", ruaValue)
+				log.Warn().Str("rua", ruaValue).Msg("Invalid 'rua' email address")
 				continue
 			}
 
 			emailDomain := afterAt[1]
 			fmt.Println(emailDomain)
+			log.Info().Str("email_domain", emailDomain).Msg("Extracted email domain from 'rua' tag")
 		}
 	}
 }
@@ -79,11 +102,17 @@ func parseDMARCRecord(record string) (DMARCRecord, error) {
 
 	tags := strings.Split(record, ";")
 	for _, tag := range tags {
-		trimmedTag := strings.TrimSpace(tag)
-		dmarcTag, err := parseDMARCTag(trimmedTag)
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		dmarcTag, err := parseDMARCTag(tag)
 		if err != nil {
+			log.Warn().Err(err).Str("tag", tag).Msg("Failed to parse DMARC tag")
 			return DMARCRecord{}, err
 		}
+
+		log.Debug().Str("tag", dmarcTag.Tag).Str("value", dmarcTag.Value).Msg("Parsed DMARC tag")
 
 		dmarcRecord.Tags[dmarcTag.Tag] = dmarcTag.Value
 	}
@@ -92,13 +121,15 @@ func parseDMARCRecord(record string) (DMARCRecord, error) {
 }
 
 func parseDMARCTag(tag string) (DMARCTag, error) {
-	tagSplit := strings.Split(tag, "=")
+	tagSplit := strings.SplitN(tag, "=", 2)
 	if len(tagSplit) != 2 {
-		return DMARCTag{}, fmt.Errorf("invalid tag: %s", tag)
+		err := fmt.Errorf("invalid tag: %s", tag)
+		log.Warn().Err(err).Str("tag", tag).Msg("Failed to parse DMARC tag")
+		return DMARCTag{}, err
 	}
 
 	return DMARCTag{
-		Tag:   tagSplit[0],
-		Value: tagSplit[1],
+		Tag:   strings.TrimSpace(tagSplit[0]),
+		Value: strings.TrimSpace(tagSplit[1]),
 	}, nil
 }

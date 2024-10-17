@@ -2,6 +2,10 @@ module github.com/vitorfhc/check_dmarc
 
 go 1.23.0
 
-require github.com/sirupsen/logrus v1.9.3
+require github.com/rs/zerolog v1.33.0
 
-require golang.org/x/sys v0.0.0-20220715151400-c0bba94af5f8 // indirect
+require (
+	github.com/mattn/go-colorable v0.1.13 // indirect
+	github.com/mattn/go-isatty v0.0.19 // indirect
+	golang.org/x/sys v0.12.0 // indirect
+)
